@@ -1,0 +1,124 @@
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const jwt = require('jsonwebtoken');
+const WebSocket = require('ws');
+
+
+// Import database configuration
+const client = require('./config/db.js')
+client.connect()
+
+// Initialize Express app
+const app = express();
+
+// Setup middleware
+app.use(cors());
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// Import routes
+const userRoutes = require('./routes/users');
+const categoryRoutes = require('./routes/categories');
+const noteRoutes = require('./routes/notes');
+
+//Using  routes
+app.use('/api/users', userRoutes);
+app.use('/api/categories', categoryRoutes);
+app.use('/api/notes', noteRoutes);
+
+// websocket
+const wss = new WebSocket.Server({ port: 8081 });
+const noteClients = new Map();
+
+wss.on('connection', (ws) => {
+  console.log("SOMEONE CONNECTED")
+  let authenticated = false;
+  let note_id;
+
+  ws.on('message', async (message) => {
+    if (!authenticated) {
+      // User just connected, authenticate and send the doc
+      try {
+        const data = JSON.parse(message);
+        const token = data.token;
+        // TODO jwt stuff
+        //const decoded = jwt.verify(token, 'your-secret-key'); // Replace 'your-secret-key' with your actual secret key
+        const decoded = true
+
+        note_id = data.note_id;
+
+        // Validate note_id, check if it exists in your database
+        // For example:
+        // const noteExists = await checkNoteExists(note_id); // Implement this function to check database
+
+        //const checkQuery = 'SELECT EXISTS(SELECT 1 FROM notes WHERE note_id = $1)'
+        // TODO check that the note exists
+        const noteExists = true
+
+
+        // update local map
+        if (decoded && noteExists) {
+          authenticated = true;
+          if (!noteClients.has(note_id)) {
+            noteClients.set(note_id, []);
+          }
+          noteClients.get(note_id).push(ws);
+        } else {
+          ws.close();
+        }
+
+        // send the note to the user TODO lots of work to be done here
+        const noteQuery = 'SELECT content FROM notes WHERE note_id = $1'
+        const { note_info } = client.query(noteQuery, [note_id])
+
+
+
+      } catch (err) {
+        ws.close();
+      }
+    } else {
+      // User just sent an update
+      const data = JSON.parse(message);
+      note_id = data.note_id;
+
+      // Handle note modifications
+      // Update the database and broadcast to all clients
+      // You may use something like:
+      // const result = await updateNoteInDatabase(note_id, message); // Implement this function to update database
+
+      // update in the database TODO LOTS OF WORK TO BE DONE HERE
+      const updateQuery = 'UPDATE notes SET content = $1 WHERE note_id = $2'
+      const { cheese } = await client.query(updateQuery, [data.content, note_id])
+
+      // Broadcast to all other clients connected to this note_id
+      if (noteClients.has(note_id)) {
+        noteClients.get(note_id).forEach((c) => {
+          if (/*client !== ws && */c.readyState === WebSocket.OPEN) {
+            c.send(`Update: ${message}`);
+          }
+        });
+      }
+    }
+  });
+
+  ws.on('close', () => {
+    // Remove this client from the list of clients connected to this note_id
+    if (noteClients.has(note_id)) {
+      const clients = noteClients.get(note_id).filter((client) => client !== ws);
+      if (clients.length > 0) {
+        noteClients.set(note_id, clients);
+      } else {
+        noteClients.delete(note_id);
+      }
+    }
+  });
+});
+
+
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}.`);
+});
+
